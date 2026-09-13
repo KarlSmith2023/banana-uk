@@ -159,6 +159,7 @@ function cacheKey(list) {
 
 async function fetchPrices(instruments) {
   const key = cacheKey(instruments);
+  const hit = cache.get(key);
   if (hit && Date.now() - hit.at < CACHE_MS) return { ...hit.payload, cached: true };
 
   const mapped = instruments.map(bananaToTv);
