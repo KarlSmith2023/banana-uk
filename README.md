@@ -18,17 +18,33 @@ Phone-installable, no-Node: HTML / JS / CSS. Paper book in `localStorage` (`bana
 | `GBP_USD`, `EUR_USD`, `XAU_GBP`, `UK100_GBP`, `USD_CAD` | Fresh demos |
 | `EUR_JPY`, `XAU_USD` | Do-not-chase demos |
 
-Seed as-of **Fri 11 Sep 2026** (plausible marks, fake-but-consistent pivots/%). Quotes: **OANDA practice pricing** when token + account ID are set; otherwise **seed marks**.
+Seed as-of **Fri 11 Sep 2026** (plausible marks, fake-but-consistent pivots/%). Quotes: **local TradingView proxy** (`npm run quotes`) when it is up, else **OANDA practice pricing** when token + account ID are set, else **seed marks**. Status chip: `tradingview` | `practice` | `seed`.
 
 ## Run
 
 ```bash
-# from repo root or this folder
+# from this folder (or repo-root /banana-uk)
 python3 -m http.server 8765 --directory .
 # open http://127.0.0.1:8765/  or  .../banana-uk/
 ```
 
-Optional practice creds (local only):
+### Live quotes on the PC (preferred)
+
+OANDA practice from the **phone / GitHub Pages** hits CORS, so those clients stay on seed marks. On the PC, run the unofficial TradingView quote proxy (same box as the static PWA):
+
+```bash
+cd banana-uk          # or C:\\Users\\karls\\Projects\\banana-uk
+npm i                 # installs @mathieuc/tradingview; node_modules is gitignored
+npm run quotes        # node tv-quote-proxy.mjs → http://127.0.0.1:8791
+# Playbook → Quotes: proxy URL http://127.0.0.1:8791 (saved in localStorage)
+# Trade → Refresh quotes  (or Playbook → Test quotes)
+```
+
+Maps Banana instruments (`GBP_USD`, `UK100_GBP`, …) to TradingView `OANDA:GBPUSD`, `OANDA:UK100GBP`, etc. Returns JSON `{ prices: [{ instrument, last, bid, ask, … }] }`. CORS `*` for the local PWA.
+
+**Honesty / ToS:** `@mathieuc/tradingview` is an **unofficial** community client (Mathieu2301 TradingView-API). It is **not** TradingView’s API, not affiliated with TradingView, and may break or violate TradingView’s terms if abused. Use only locally for personal paper marks. Never commit session cookies, `sessionid`, or any TV/OANDA secrets. Do not deploy this proxy to the public internet.
+
+Optional OANDA practice creds (local only, fallback if the TV proxy is down):
 
 ```bash
 export OANDA_PRACTICE_TOKEN=…
@@ -49,7 +65,7 @@ Try: open Trade · **GBP_USD** → **Place paper order**. BP-style chase rejects
 | Trail | Daily close below **50-EMA** |
 | Gate | Live / practice **send** locked **60 sessions** |
 
-Start equity **£800**. P&L **GBP only** (optional tiny USD note). Yellow Banana UI. PWA: name **Banana UK**, short_name **BananaUK**, theme `#F5C518`, SW cache `banana-uk-v1`.
+Start equity **£800**. P&L **GBP only** (optional tiny USD note). Yellow Banana UI. PWA: name **Banana UK**, short_name **BananaUK**, theme `#F5C518`, SW cache `banana-uk-v2`.
 
 ## Paths
 
@@ -57,4 +73,4 @@ Relative assets (`./app.js`, …) work at GitHub Pages `/banana-uk/` or repo roo
 
 ## Reset
 
-Playbook → **Reset paper book to seed**, or clear `banana-uk-fx-v1` / `banana-uk-oanda-creds-v1`.
+Playbook → **Reset paper book to seed**, or clear `banana-uk-fx-v1` / `banana-uk-oanda-creds-v1` / `banana-uk-quote-proxy-v1`.
