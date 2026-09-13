@@ -441,7 +441,10 @@
   function loadQuoteProxy() {
     try {
       var raw = localStorage.getItem(QUOTE_PROXY_KEY);
-      if (!raw) return { url: DEFAULT_QUOTE_PROXY, status: "seed", lastError: "" };
+      if (!raw) {
+        var boot = (typeof window !== "undefined" && window.__BANANA_UK_QUOTE_PROXY__) ? String(window.__BANANA_UK_QUOTE_PROXY__) : DEFAULT_QUOTE_PROXY;
+        return { url: boot || DEFAULT_QUOTE_PROXY, status: "seed", lastError: "" };
+      }
       var o = JSON.parse(raw);
       return {
         url: String(o.url != null ? o.url : DEFAULT_QUOTE_PROXY),

@@ -67,7 +67,9 @@
     </div>
   </div>
 
-  <!-- Optional local-only override (gitignored). Sets window.__OANDA_PRACTICE__ = {token, accountId} -->
+  <!-- Optional local-only overrides (gitignored) -->
+  <script src="./quote-proxy-local.js"></script>
+  <!-- Sets window.__OANDA_PRACTICE__ = {token, accountId} -->
   <script src="./oanda-local.js" onerror="/* optional */"></script>
   <script src="./app.js"></script>
   <script src="./tv-quotes.js"></script>
