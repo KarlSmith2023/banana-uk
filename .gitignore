@@ -1,0 +1,8 @@
+oanda-local.js
+.env
+.env.*
+*.pem
+oanda-local.js
+.env
+.env.*
+node_modules/

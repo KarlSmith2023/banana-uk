@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Banana UK</title>
+  <script>
+    (function () {
+      var path = location.pathname.replace(/\/+$/, "");
+      var parts = path.split("/");
+      var last = parts.pop() || "";
+      var known = { overview:1, scanner:1, ticket:1, positions:1, charts:1, playbook:1, scorecard:1, journal:1, api:1 };
+      var base = parts.join("/") + "/";
+      var q = location.search || "";
+      var hash = known[last] ? "#/" + last + (q ? (q.indexOf("?") === 0 ? q.replace("?", "?") : "?" + q.replace(/^\?/, "")) : "") : "#/overview";
+      location.replace(base + "index.html" + hash);
+    })();
+  </script>
+</head>
+<body style="background:#0a0e14;color:#6b7a90;font-family:system-ui">Redirecting to Banana UK…</body>
+</html>
