@@ -1,0 +1,11 @@
+{
+  "name": "banana-uk",
+  "private": true,
+  "description": "Banana UK paper desk — static PWA plus optional local TradingView quote proxy",
+  "scripts": {
+    "quotes": "node tv-quote-proxy.mjs"
+  },
+  "dependencies": {
+    "@mathieuc/tradingview": "^3.5.2"
+  }
+}
