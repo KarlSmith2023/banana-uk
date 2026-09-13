@@ -4,6 +4,8 @@
 
   var LS_KEY = "banana-uk-fx-v1";
   var OANDA_CREDS_KEY = "banana-uk-oanda-creds-v1"; /* token+account in localStorage only — never commit */
+  var QUOTE_PROXY_KEY = "banana-uk-quote-proxy-v1"; /* local TV proxy URL — never commit secrets */
+  var DEFAULT_QUOTE_PROXY = "http://127.0.0.1:8791";
   var SEED_AS_OF = "2026-09-11";
   var DEFAULT_FX_USD = 1.27; /* optional tiny USD note — book is GBP-only */
   var DEFAULT_CASH = 800; /* £800 start equity */
@@ -436,6 +438,119 @@
     return { token: "", accountId: "", status: "disconnected" };
   }
 
+  function loadQuoteProxy() {
+    try {
+      var raw = localStorage.getItem(QUOTE_PROXY_KEY);
+      if (!raw) return { url: DEFAULT_QUOTE_PROXY, status: "seed", lastError: "" };
+      var o = JSON.parse(raw);
+      return {
+        url: String(o.url != null ? o.url : DEFAULT_QUOTE_PROXY),
+        status: o.status || "seed",
+        lastError: o.lastError || "",
+        updatedAt: o.updatedAt || "",
+      };
+    } catch (e) {
+      return { url: DEFAULT_QUOTE_PROXY, status: "seed", lastError: "" };
+    }
+  }
+  function saveQuoteProxy(patch) {
+    var cur = loadQuoteProxy();
+    var next = Object.assign({}, cur, patch || {}, { updatedAt: new Date().toISOString() });
+    try { localStorage.setItem(QUOTE_PROXY_KEY, JSON.stringify(next)); }
+    catch (e) { console.warn("Banana UK quote proxy persist failed", e); }
+    return next;
+  }
+  function quoteSourceChip() {
+    var p = loadQuoteProxy();
+    if (p.status === "tradingview") return "tradingview";
+    var c = loadOandaCreds();
+    if (c.status === "practice") return "practice";
+    return "seed";
+  }
+
+  function applyPriceTick(sym, last, bid, ask, source, changePct) {
+    var prev = book.quotes[sym] ? book.quotes[sym].last : last;
+    var chg = (changePct != null && isFinite(Number(changePct)))
+      ? Number(changePct)
+      : (prev > 0 ? ((last - prev) / prev) * 100 : 0);
+    book.quotes[sym] = {
+      symbol: sym, last: last,
+      bid: bid > 0 ? bid : last,
+      ask: ask > 0 ? ask : last,
+      changePct: Math.round(chg * 10000) / 10000,
+      source: source,
+      updatedAt: new Date().toISOString(),
+    };
+    var setup = book.setups.filter(function (s) { return s.symbol === sym; })[0];
+    if (setup) { setup.last = last; setup.changePct = book.quotes[sym].changePct; }
+  }
+
+  function refreshTradingViewQuotes(symbols, cb) {
+    symbols = symbols || book.setups.map(function (s) { return s.symbol; });
+    var proxy = loadQuoteProxy();
+    var base = String(proxy.url || "").replace(/\/$/, "");
+    if (!base) {
+      if (cb) cb(0, "skip");
+      return;
+    }
+    var instruments = symbols.map(normalizeInstrument).join(",");
+    var url = base + "/quotes?instruments=" + encodeURIComponent(instruments);
+    saveQuoteProxy({ status: "connecting" });
+    fetch(url, { credentials: "omit" })
+      .then(function (r) {
+        if (!r.ok) return r.text().then(function (t) { throw new Error("HTTP " + r.status + " " + String(t).slice(0, 160)); });
+        return r.json();
+      })
+      .then(function (data) {
+        var prices = (data && data.prices) || [];
+        var changed = 0;
+        prices.forEach(function (pr) {
+          if (pr.error && !(Number(pr.last) > 0)) return;
+          var sym = normalizeInstrument(pr.instrument);
+          var last = Number(pr.last);
+          var bid = Number(pr.bid);
+          var ask = Number(pr.ask);
+          if (!(last > 0) && !(bid > 0) && !(ask > 0)) {
+            var bids = pr.bids || [];
+            var asks = pr.asks || [];
+            bid = bids[0] ? Number(bids[0].price) : bid;
+            ask = asks[0] ? Number(asks[0].price) : ask;
+            last = (bid > 0 && ask > 0) ? (bid + ask) / 2 : (ask > 0 ? ask : bid);
+          }
+          if (!(last > 0)) return;
+          applyPriceTick(sym, last, bid, ask, "tradingview", pr.changePct);
+          changed++;
+        });
+        if (changed) {
+          saveQuoteProxy({ status: "tradingview", lastError: "" });
+          persistSoon();
+          if (cb) cb(changed, "tradingview");
+        } else {
+          saveQuoteProxy({ status: "error", lastError: "Proxy returned no prices" });
+          if (cb) cb(0, "empty");
+        }
+      })
+      .catch(function (err) {
+        var raw = String(err && err.message ? err.message : err);
+        var msg = raw;
+        if (/Failed to fetch|NetworkError|CORS|Load failed/i.test(raw)) {
+          msg = "Quote proxy unreachable (" + base + "). Run locally: npm i && npm run quotes";
+        }
+        saveQuoteProxy({ status: "error", lastError: msg });
+        if (cb) cb(0, "error");
+      });
+  }
+
+  /* Prefer local TV proxy, then OANDA practice, then seed marks. */
+  function refreshQuotes(symbols, cb) {
+    refreshTradingViewQuotes(symbols, function (n, mode) {
+      if (mode === "tradingview") { if (cb) cb(n, "tradingview"); return; }
+      refreshOandaPracticeQuotes(symbols, function (n2, mode2) {
+        if (cb) cb(n2, mode2);
+      });
+    });
+  }
+
   /* Practice pricing only — never api-fxtrade. Falls back to seed marks offline / no token. */
   function refreshOandaPracticeQuotes(symbols, cb) {
     symbols = symbols || book.setups.map(function (s) { return s.symbol; });
@@ -471,15 +586,7 @@
           var ask = asks[0] ? Number(asks[0].price) : NaN;
           if (!(bid > 0) && !(ask > 0)) return;
           var last = (bid > 0 && ask > 0) ? (bid + ask) / 2 : (ask > 0 ? ask : bid);
-          var prev = book.quotes[sym] ? book.quotes[sym].last : last;
-          var chg = prev > 0 ? ((last - prev) / prev) * 100 : 0;
-          book.quotes[sym] = {
-            symbol: sym, last: last, bid: bid > 0 ? bid : last, ask: ask > 0 ? ask : last,
-            changePct: Math.round(chg * 10000) / 10000,
-            source: "oanda-practice", updatedAt: new Date().toISOString(),
-          };
-          var setup = book.setups.filter(function (s) { return s.symbol === sym; })[0];
-          if (setup) { setup.last = last; setup.changePct = book.quotes[sym].changePct; }
+          applyPriceTick(sym, last, bid, ask, "oanda-practice", null);
           changed++;
         });
         saveOandaCreds({ status: "practice", lastError: "" });
@@ -1362,8 +1469,8 @@
       '<div class="flex-end" style="margin-bottom:8px"><h1 class="page-title" style="margin:0">Trade ' + HOST_BADGE_HTML + '</h1></div>' +
       '<div class="card pad" style="margin-bottom:0">' +
       '<div class="tr-head"><div>' +
-      '<div class="tr-pair"><span id="tr-pair-name">' + esc(ticketState.symbol) + '</span><span class="q">·OANDA</span></div>' +
-      '<div class="sub">' + esc(setup && setup.name ? setup.name : "cash equity") + ' · seed/OANDA practice mark · FX & UK100 CFD</div>' +
+      '<div class="tr-pair"><span id="tr-pair-name">' + esc(ticketState.symbol) + '</span><span class="q">·' + esc(quoteSourceChip()) + '</span></div>' +
+      '<div class="sub">' + esc(setup && setup.name ? setup.name : "cash equity") + ' · ' + esc(quote.source || quoteSourceChip()) + ' mark · FX & UK100 CFD</div>' +
       '</div><div class="tr-px">' +
       '<div class="mid num" id="tr-mid">' + last.toFixed(2) + '</div>' +
       '<div class="chg num ' + chgCls + '" id="tr-chg">' + esc(pct(quote.changePct)) + '</div>' +
@@ -1423,11 +1530,11 @@
       '<button type="button" class="btn live' + (ticketState.side === "SELL" ? " sell-mode" : "") + '" id="tk-submit"' + (!canSubmit || ticketState.busy ? " disabled" : "") + ">" +
       (ticketState.busy ? "Sending…" : "Place paper order") + "</button>" +
       '<button type="button" class="btn secondary" id="tk-keep-paper">Keep paper</button>' +
-      '<button type="button" class="btn secondary" id="tk-refresh-quotes" style="margin-top:6px">Refresh OANDA practice quotes</button>' +
+      '<button type="button" class="btn secondary" id="tk-refresh-quotes" style="margin-top:6px">Refresh quotes</button>' +
       '<button type="button" class="btn secondary" id="tk-sync-oanda" style="margin-top:6px">Sync to OANDA practice (stub)</button>' +
       '<div class="halt-cap"><b>live locked</b> · ' + esc(bits.liveLabel) + ' · PLACE PAPER ORDER only · never fxtrade</div>' +
       (ticketState.msg ? '<div class="msg ' + (okMsg ? "ok" : "err") + '" style="margin-top:8px">' + esc(ticketState.msg) + "</div>" : "") +
-      '<div class="sub" style="margin-top:8px" id="tr-msg">Attached stop (' + settings.stopPct + '%) + trail on filled BUY · Outside FX hours market queues for next open · Quotes: OANDA practice or seed marks · Not financial advice</div>' +
+      '<div class="sub" style="margin-top:8px" id="tr-msg">Attached stop (' + settings.stopPct + '%) + trail on filled BUY · Outside FX hours market queues for next open · Quotes: tradingview proxy → OANDA practice → seed · Not financial advice</div>' +
       '</div>' +
 
       '<div class="card pad">' +
@@ -1437,7 +1544,7 @@
       '<div class="bal" style="background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px"><div class="k" style="font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)">Equity</div><div class="v num" style="font-size:14px;margin-top:4px;font-weight:600">' + esc(dual(account.equity, fx)) + '</div></div>' +
       '</div>' +
       (vsPivot != null && vsPivot > settings.maxChasePct ? '<div class="banner warn-banner" style="margin-top:10px"><b>Above chase limit</b> — order will reject (&gt;' + settings.maxChasePct + '% over pivot)</div>' : "") +
-      '<p class="sub" style="margin-top:12px">Paper engine · £800 start · GBP only · OANDA practice quotes · 60-session live lock · localStorage</p>' +
+      '<p class="sub" style="margin-top:12px">Paper engine · £800 start · GBP only · quotes tradingview|practice|seed · 60-session live lock · localStorage</p>' +
       '</div></div></div>'
     );
   }
@@ -1535,13 +1642,29 @@
       numField("pb-fx", "Optional GBPUSD note (display only)", s.fxGbpUsd, "0.01") + numField("pb-slip", "Slippage bps (market)", s.slippageBps) +
       '<label class="check"><input type="checkbox" id="pb-queue"' + (s.queueMarketOutsideHours ? " checked" : "") + " /> Queue market orders outside FX hours</label>" +
       '<label class="check"><input type="checkbox" id="pb-sim"' + (s.simSession ? " checked" : "") + " /> SIM session (weekend / demo labelled SIM)</label></div>" +
+            '<div class="desk-panel pad" style="display:flex;flex-direction:column;gap:12px"><h2>Quotes (tradingview → practice → seed)</h2>' +
+      (function () {
+        var chip = quoteSourceChip();
+        var p = loadQuoteProxy();
+        var c = loadOandaCreds();
+        var tone = chip === "tradingview" || chip === "practice" ? "ok" : (p.status === "error" || c.status === "error" ? "err" : "");
+        var extra = p.lastError || c.lastError || "";
+        return '<div class="msg ' + tone + '" id="quote-status" style="margin:0">Status: <b>' + esc(chip) + '</b>' +
+          (extra ? " — " + esc(extra) : "") + "</div>";
+      })() +
+      '<p class="muted" style="font-size:12px;margin:0">Local <code>tv-quote-proxy.mjs</code> (<code>npm i && npm run quotes</code>) uses unofficial <code>@mathieuc/tradingview</code>. Not affiliated with TradingView — personal use, respect their ToS. Phone / GitHub Pages cannot reach localhost; set the URL only for a PC serving the PWA locally. No secrets committed.</p>' +
+      '<label class="field">Quote proxy URL<input class="desk-input" id="pb-quote-proxy" type="url" autocomplete="off" placeholder="http://127.0.0.1:8791" value="' + esc(loadQuoteProxy().url || DEFAULT_QUOTE_PROXY) + '" /></label>' +
+      '<div style="display:flex;flex-wrap:wrap;gap:8px">' +
+      '<button type="button" class="desk-btn-primary" id="pb-quote-save" style="font-size:12px">Save proxy URL</button>' +
+      '<button type="button" class="desk-btn" id="pb-quote-test" style="font-size:12px">Test quotes</button>' +
+      '</div></div>' +
             '<div class="desk-panel pad" style="display:flex;flex-direction:column;gap:12px"><h2>OANDA practice (pricing)</h2>' +
-      '<p class="muted" style="font-size:12px;margin:0">Token + account ID stay in <code>localStorage</code> only (never committed). Host is <code>api-fxpractice.oanda.com</code> only — live <code>fxtrade</code> is never called. GitHub Pages cannot reach OANDA (CORS) — quotes stay seed there. Local <code>oanda-proxy.mjs</code> is the practice pricing path.</p>' +
+      '<p class="muted" style="font-size:12px;margin:0">Token + account ID stay in <code>localStorage</code> only (never committed). Host is <code>api-fxpractice.oanda.com</code> only — live <code>fxtrade</code> is never called. GitHub Pages cannot reach OANDA (CORS) — quotes stay seed there unless the TV proxy is running on this machine. Local <code>oanda-proxy.mjs</code> remains the practice fallback path.</p>' +
       (function () {
         var c = loadOandaCreds();
         var st = c.status || "disconnected";
         var tone = st === "practice" ? "ok" : (st === "error" ? "err" : "");
-        return '<div class="msg ' + tone + '" id="oanda-status" style="margin:0">Status: <b>' + esc(st) + '</b>' +
+        return '<div class="msg ' + tone + '" id="oanda-status" style="margin:0">OANDA: <b>' + esc(st) + '</b>' +
           (c.lastError ? " — " + esc(c.lastError) : "") +
           (c.accountId ? " · account …" + esc(String(c.accountId).slice(-4)) : " · no account") + "</div>";
       })() +
@@ -1722,6 +1845,31 @@
     onSave("pb-ck2", "change", function () { return { checklistMaxDdAcceptable: chk("pb-ck2") }; }, "Checklist max DD");
     onSave("pb-ck3", "change", function () { return { checklistExpectancyRecorded: chk("pb-ck3") }; }, "Checklist expectancy");
 
+    var qSave = document.getElementById("pb-quote-save");
+    if (qSave) qSave.addEventListener("click", function () {
+      var url = ((document.getElementById("pb-quote-proxy") || {}).value || "").trim();
+      saveQuoteProxy({ url: url || DEFAULT_QUOTE_PROXY, lastError: "" });
+      playMsg = "Quote proxy URL saved in localStorage (not committed)";
+      render();
+    });
+    var qTest = document.getElementById("pb-quote-test");
+    if (qTest) qTest.addEventListener("click", function () {
+      var url = ((document.getElementById("pb-quote-proxy") || {}).value || "").trim();
+      if (url) saveQuoteProxy({ url: url });
+      playMsg = "Testing quotes (tradingview → practice → seed)…";
+      render();
+      refreshQuotes(null, function (n, mode) {
+        playMsg = mode === "tradingview"
+          ? ("TradingView proxy OK — updated " + n + " instrument(s)")
+          : (mode === "practice"
+            ? ("Practice pricing OK — updated " + n + " instrument(s)")
+            : (mode === "seed"
+              ? "No proxy / practice — using seed marks"
+              : "Quote refresh failed — still on seed marks"));
+        render();
+      });
+    });
+
     var oSave = document.getElementById("pb-oanda-save");
     if (oSave) oSave.addEventListener("click", function () {
       var tok = (document.getElementById("pb-oanda-token") || {}).value || "";
@@ -1734,12 +1882,14 @@
     if (oTest) oTest.addEventListener("click", function () {
       playMsg = "Testing OANDA practice pricing…";
       render();
-      refreshOandaPracticeQuotes(null, function (n, mode) {
-        playMsg = mode === "practice"
-          ? ("Practice pricing OK — updated " + n + " instrument(s)")
-          : (mode === "seed"
-            ? "No practice token/account — using seed marks"
-            : "Practice pricing failed — see status (still on seed marks)");
+      refreshQuotes(null, function (n, mode) {
+        playMsg = mode === "tradingview"
+          ? ("TradingView proxy OK — updated " + n + " instrument(s)")
+          : (mode === "practice"
+            ? ("Practice pricing OK — updated " + n + " instrument(s)")
+            : (mode === "seed"
+              ? "No proxy / practice token — using seed marks"
+              : "Quote refresh failed — see status (still on seed marks)"));
         render();
       });
     });
@@ -1832,12 +1982,14 @@
 
     var refq = document.getElementById("tk-refresh-quotes");
     if (refq) refq.addEventListener("click", function () {
-      ticketState.msg = "Refreshing OANDA practice quotes…";
+      ticketState.msg = "Refreshing quotes (tradingview → practice → seed)…";
       render();
-      refreshOandaPracticeQuotes(null, function (n, mode) {
-        ticketState.msg = mode === "practice"
-          ? ("Quotes updated from OANDA practice (" + n + ")")
-          : (mode === "seed" ? "No practice creds — seed marks" : "Practice quote refresh failed — seed marks");
+      refreshQuotes(null, function (n, mode) {
+        ticketState.msg = mode === "tradingview"
+          ? ("Quotes updated from TradingView proxy (" + n + ")")
+          : (mode === "practice"
+            ? ("Quotes updated from OANDA practice (" + n + ")")
+            : (mode === "seed" ? "No proxy / practice creds — seed marks" : "Quote refresh failed — seed marks"));
         render();
       });
     });
@@ -2053,7 +2205,11 @@
       ingestSetups: ingestSetups,
       saveSettings: saveSettings,
       refreshOandaPracticeQuotes: refreshOandaPracticeQuotes,
+      refreshQuotes: refreshQuotes,
+      refreshTradingViewQuotes: refreshTradingViewQuotes,
       loadOandaCreds: loadOandaCreds,
+      loadQuoteProxy: loadQuoteProxy,
+      quoteSourceChip: quoteSourceChip,
       syncToOandaPracticeStub: syncToOandaPracticeStub,
       getBook: function () { return book; },
     };
@@ -2091,7 +2247,7 @@
       }
     });
     if (!location.hash) location.hash = "#/ticket?symbol=GBP_USD";
-    try { refreshOandaPracticeQuotes(null, function () {}); } catch (e) {}
+    try { refreshQuotes(null, function () {}); } catch (e) {}
     render();
     registerSW();
     setInterval(function () {
