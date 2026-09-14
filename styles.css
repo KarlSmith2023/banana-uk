@@ -104,18 +104,30 @@ button {
   flex-direction: column;
 }
 
-.safe-top { padding-top: var(--safe-t); }
-.safe-bottom { padding-bottom: var(--safe-b); }
+.safe-top {
+  /* iOS constant() then env(); never let later padding shorthand wipe this */
+  padding-top: constant(safe-area-inset-top);
+  padding-top: env(safe-area-inset-top, 0px);
+}
+.safe-bottom {
+  padding-bottom: constant(safe-area-inset-bottom);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
 
 /* ---- Header ---- */
 header.top {
   position: sticky;
   top: 0;
   z-index: 40;
-  background: rgba(5, 8, 11, 0.92);
+  background: rgba(5, 8, 11, 0.96);
   backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--line);
-  padding: 10px 14px 10px;
+  /* base padding + safe inset (shorthand must not clobber top) */
+  padding-top: calc(12px + constant(safe-area-inset-top));
+  padding-top: calc(12px + env(safe-area-inset-top, 0px));
+  padding-right: 14px;
+  padding-bottom: 10px;
+  padding-left: 14px;
 }
 
 .top-row {
@@ -1072,7 +1084,12 @@ canvas.chart {
 }
 
 @media (min-width: 640px) {
-  header.top { padding-left: 16px; padding-right: 16px; }
+  header.top {
+    padding-left: 16px;
+    padding-right: 16px;
+    padding-top: calc(12px + constant(safe-area-inset-top));
+    padding-top: calc(12px + env(safe-area-inset-top, 0px));
+  }
   main.view { padding: 14px 16px 96px; }
   .kpis { gap: 12px; }
 }

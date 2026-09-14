@@ -1,5 +1,5 @@
 /* Banana UK static PWA — cache shell; BananaPatterns is India-only (no UK feed) */
-const CACHE = "banana-uk-v2";
+const CACHE = "banana-uk-v3";
 const PRECACHE = [
   "./",
   "./index.html",
